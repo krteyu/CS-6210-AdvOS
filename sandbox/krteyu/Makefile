@@ -1,5 +1,5 @@
 CXX      := g++
-CXXFLAGS := -std=c++17 -Wall -Wextra -g
+CXXFLAGS := -std=c++20 -Wall -Wextra -g
 HEADERS  := ringbuffer.h include.h
 TARGETS  := consumer producer
 

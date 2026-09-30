@@ -25,7 +25,19 @@ int main(int argc, char* argv[]) {
         RingNode_t node;
         node.segment_id = i;
         node.data_len = 0;
-        node.control_field = 0;
+        std::atomic_ref<uint8_t> ctl_ref(node.control_field);
+        if(i%2==0){
+            ctl_ref.store(build_control(SEG_REQ, SNGL, SYNC), memory_order_release);
+        }
+        else{
+            if(i==1)
+                ctl_ref.store(build_control(DATA_READY, INIT, SYNC), memory_order_release);
+            else if(i==9)
+                ctl_ref.store(build_control(DATA_READY, FIN, SYNC), memory_order_release);
+            else
+                ctl_ref.store(build_control(DATA_READY, CONT, SYNC), memory_order_release);
+        }
+        
         if(!rb->push(node)){
             cerr << "ring full\n";
             shmdt(rb);

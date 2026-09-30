@@ -7,7 +7,28 @@ RingBuffer_t *rb;
 volatile sig_atomic_t running = 1;
 
 void handle_signal(int sig) {
+    (void)sig;
     running = 0;
+}
+
+void parse_control_field(uint8_t ctl){
+    string out="";
+    switch(get_opcode(ctl)){
+        case SEG_REQ: out+="SEG_REQ|"; break;
+        case SEG_GRANT: out+="SEG_GRANT|"; break;
+        case DATA_READY: out+="DATA_READY|"; break;
+    }
+    switch(get_status(ctl)){
+        case INIT: out+="INIT|"; break;
+        case SNGL: out+="SNGL|"; break;
+        case CONT: out+="CONT|"; break;
+        case FIN: out+="FIN|"; break;
+    }
+    switch(get_transfer_mode(ctl)){
+        case SYNC: out+="SYNC|"; break;
+        case ASYNC: out+="ASYNC|"; break;
+    }
+    cout<<out<<endl;
 }
 
 int create_shared_ringbuffer(){
@@ -38,7 +59,7 @@ int create_shared_ringbuffer(){
     info.close();
     return 0;
 }
-int main(int argc, char* argv[]) {
+int main(int /*argc*/, char* /*argv*/[]) {
     create_shared_ringbuffer();
     struct sembuf wait_op = { 0, -1, 0 };
 
@@ -64,7 +85,9 @@ int main(int argc, char* argv[]) {
         }
         RingNode_t node;
         while (rb->pop(&node)){
-            cout<<node.segment_id<<"||"<<node.data_len<<"||"<<node.control_field<<endl;
+            uint8_t ctl= node.control_field;
+            cout<<node.segment_id<<"||"<<node.data_len<<"||";
+            parse_control_field(ctl);
         }
     }
     shmdt(rb);
