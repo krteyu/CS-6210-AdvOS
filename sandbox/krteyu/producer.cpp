@@ -2,7 +2,7 @@
 #include "ringbuffer.h"
 using namespace std;
 
-int main(int argc, char* argv[]) {
+int main(int /*argc*/, char* /*argv*/[]) {
     ifstream info("/tmp/ring_info.txt");
     if (!info){
         perror("open ring_info.txt"); 
@@ -19,7 +19,7 @@ int main(int argc, char* argv[]) {
         perror("shmat"); 
         exit(1); 
     }
-    RingBuffer_t *rb = reinterpret_cast<RingBuffer_t*>(shm);
+    ringbuffer_t *rb = reinterpret_cast<ringbuffer_t*>(shm);
     struct sembuf post_op = { 0, +1, 0 };
     for(int i=0;i<10;i++){
         RingNode_t node;
@@ -27,15 +27,15 @@ int main(int argc, char* argv[]) {
         node.data_len = 0;
         std::atomic_ref<uint8_t> ctl_ref(node.control_field);
         if(i%2==0){
-            ctl_ref.store(build_control(SEG_REQ, SNGL, SYNC), memory_order_release);
+            node.control_field = build_control(SEG_REQ, SNGL, SYNC);
         }
         else{
             if(i==1)
-                ctl_ref.store(build_control(DATA_READY, INIT, SYNC), memory_order_release);
+                node.control_field = build_control(DATA_READY, INIT, SYNC);
             else if(i==9)
-                ctl_ref.store(build_control(DATA_READY, FIN, SYNC), memory_order_release);
+                node.control_field = build_control(DATA_READY, FIN, SYNC);
             else
-                ctl_ref.store(build_control(DATA_READY, CONT, SYNC), memory_order_release);
+                node.control_field = build_control(DATA_READY, CONT, SYNC);
         }
         
         if(!rb->push(node)){

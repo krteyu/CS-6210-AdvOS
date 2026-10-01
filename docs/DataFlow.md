@@ -8,7 +8,7 @@
 1. Client moves as much data as possible into the segment and sends a 'DATA_READY' message to the server.
     1. If the file manages to fit entirely inside the segment, the message is of type `SNGL`
     2. If not, the first message is of type `INIT`. The next message is of type `CONT` if its isn't the final chunk. The final chunk is of type `FIN`.
-    3. Every new message is preceded by a `SEG_REQ` message, as the server revokes a segment after use.
+    3. The client should only keep in-flight a certain max number of requests for segments. The server keeps track of how many segments have been requested and grant it according to its scheduling policy. Segments are granted with `SEG_GRANT` messages and are revoked when the segments are used by a `DATA_READY` message.
     4. The server stores the chunks into local memory, once the whole file is collected, it compresses it.
 1. The server returns the compressed file through the client's incoming (Server-> Client) ringbuffer. 
 1. The server sends `DATA_READY` messages to the client, wiht chunks of the compressed file. The server can buffer as many messages as there are free shared segments. (TO-DO: Consider failure conditions and revocation)

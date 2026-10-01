@@ -3,7 +3,7 @@
 using namespace std;
 
 int sem_id, shm_id;
-RingBuffer_t *rb;
+ringbuffer_t *rb;
 volatile sig_atomic_t running = 1;
 
 void handle_signal(int sig) {
@@ -32,7 +32,7 @@ void parse_control_field(uint8_t ctl){
 }
 
 int create_shared_ringbuffer(){
-    size_t ring_bytes = sizeof(RingBuffer_t);
+    size_t ring_bytes = sizeof(ringbuffer_t);
     shm_id = shmget(IPC_PRIVATE, ring_bytes, IPC_CREAT | 0600);
     if (shm_id == -1) { 
         perror("shmget"); 
@@ -43,7 +43,7 @@ int create_shared_ringbuffer(){
         perror("shmat"); 
         exit(1); 
     }
-    rb = reinterpret_cast<RingBuffer_t *>(shm);
+    rb = reinterpret_cast<ringbuffer_t *>(shm);
     memset(shm, 0, ring_bytes);
     rb->head = 0;
     rb->tail = 0;

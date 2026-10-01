@@ -1,5 +1,5 @@
-#ifndef __INCLUDE_GUARD__
-#define __INCLUDE_GUARD__
+#ifndef __INCLUDE_H__
+#define __INCLUDE_H__
 #include <sys/ipc.h>     // key_t, IPC_CREAT, IPC_PRIVATE, IPC_RMID
 #include <sys/shm.h>     // shmget, shmat, shmdt, shmctl
 #include <sys/sem.h>     // semget, semop, semctl

@@ -1,3 +1,5 @@
+#ifndef __RINGBUFFER_H__
+#define __RINGBUFFER_H__
 #include <atomic>
 #include <cstdint>
 
@@ -54,7 +56,7 @@ inline transfer_mode get_transfer_mode(uint8_t ctl){
     return (ctl & TFMODE_BIT)? ASYNC: SYNC;
 }
 
-#define RING_MAX_SLOTS 128
+#define RING_MAX_SLOTS 16
 typedef struct RingNode {
     uint32_t segment_id;
     uint32_t data_len;
@@ -90,4 +92,5 @@ typedef struct RingBuffer{
         tail.store(t+1, std::memory_order_release);
         return true;
     }
-}RingBuffer_t;
+}ringbuffer_t;
+#endif
