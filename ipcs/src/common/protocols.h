@@ -2,7 +2,7 @@
 #define __PROTOCOLS_H__
 #include <cstdint> 
 /*Control Field Structure
-    Bits 0-1:   opcode    (0x00-SEG_REQ,  0x01-SEG_GRANT,   0x10-DATA_READY)
+    Bits 0-1:   opcode    (0x00-SEG_REQ,  0x01-SEG_GRANT,   0x10-DATA_READY,  0x11-SEG_RELEASE)
     Bits 2-3:   status    (0x00-CONT,     0x01-INIT,      0x10-FIN,      0x11-SNGL)
     Bit 4:      mode      (0x0-SYNC,    0x1-ASYNC)
     Bit 5-8:    reserved   
@@ -50,6 +50,7 @@ enum opcode : uint8_t{
     SEG_REQ = 0,    //Client->Server: requesting a segment for data to be written into
     SEG_GRANT = 1,  //Server->Client: segment granted
     DATA_READY = 2, //Client->Server: Data ready for consumption
+    SEG_RELEASE = 3,//Client->Server: done reading segment, so the server is ready to send another segment
 };
 
 enum status: uint8_t{
