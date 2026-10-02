@@ -77,15 +77,15 @@ void destroy_region(shared_region_t *region, int shm_id){
     if (region == nullptr) return;  
     // Free every per-client response semaphore
     for (int i = 0; i < MAX_CLIENTS; i++) {
-        if (region->clients[i].s2c_semid > 0) {
+        if (region->clients[i].s2c_semid >= 0) {
             semctl(region->clients[i].s2c_semid, 0, IPC_RMID);
         }
     }
 
-    if (region->reg_semid > 0) {
+    if (region->reg_semid >= 0) {
         semctl(region->reg_semid, 0, IPC_RMID);
     }
-    if (region->doorbell_semid > 0) {
+    if (region->doorbell_semid >= 0) {
         semctl(region->doorbell_semid, 0, IPC_RMID);
     }
 
