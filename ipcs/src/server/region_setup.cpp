@@ -34,8 +34,8 @@ tf_err create_and_init_region(uint32_t n_sms, uint32_t sms_size, int *out_shm_id
     //CREATE CLIENT TABLE AND INITIALIZE RINGBUFFERS
     for(int i=0; i<MAX_CLIENTS; i++){
         region->clients[i].active = false;
-        region->clients[i].pid = 0;
-        region->clients[i].max_inflight = 0;
+        region->clients[i].pid = -1;
+        region->clients[i].max_inflight = std::max<uint32_t>(n_sms/2, 1);
         region->clients[i].seg_held = 0;
         region->clients[i].seg_req = 0;
         region->clients[i].s2c_semid = semget(IPC_PRIVATE, 1, IPC_CREAT | 0600);

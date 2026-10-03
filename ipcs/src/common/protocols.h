@@ -27,22 +27,32 @@ enum class tf_err : uint8_t{
     E_NO_FREE_SEGMENT,
     E_SEMOP_FAILED,
     E_INVALID_ARG,
+    E_CLIENT_TABLE_FULL,
+    E_INITIALIZED,
+    E_UNINITIALIZED,
+    E_UNREGISTERED,
+    E_REGISTERED,
 };
 
 inline const char *tf_err_str(tf_err e) {
     switch (e) {
-        case tf_err::SUCCESS:            return "SUCCESS";
-        case tf_err::E_FILE_NOT_FOUND:   return "FILE_NOT_FOUND";
-        case tf_err::E_SHMGET_FAILED:    return "SHMGET_FAILED";
-        case tf_err::E_SHMAT_FAILED:     return "SHMAT_FAILED";
-        case tf_err::E_SEMGET_FAILED:    return "SEMGET_FAILED";
-        case tf_err::E_RING_FULL:        return "RING_FULL";
-        case tf_err::E_RING_EMPTY:       return "RING_EMPTY";
-        case tf_err::E_NO_FREE_SLOT:     return "NO_FREE_SLOT";
-        case tf_err::E_NO_FREE_SEGMENT:  return "NO_FREE_SEGMENT";
-        case tf_err::E_SEMOP_FAILED:     return "SEMOP_FAILED";
-        case tf_err::E_INVALID_ARG:      return "INVALID_ARG";
-        default:                         return "UNKNOWN";
+        case tf_err::SUCCESS:               return "SUCCESS";
+        case tf_err::E_FILE_NOT_FOUND:      return "FILE_NOT_FOUND";
+        case tf_err::E_SHMGET_FAILED:       return "SHMGET_FAILED";
+        case tf_err::E_SHMAT_FAILED:        return "SHMAT_FAILED";
+        case tf_err::E_SEMGET_FAILED:       return "SEMGET_FAILED";
+        case tf_err::E_RING_FULL:           return "RING_FULL";
+        case tf_err::E_RING_EMPTY:          return "RING_EMPTY";
+        case tf_err::E_NO_FREE_SLOT:        return "NO_FREE_SLOT";
+        case tf_err::E_NO_FREE_SEGMENT:     return "NO_FREE_SEGMENT";
+        case tf_err::E_SEMOP_FAILED:        return "SEMOP_FAILED";
+        case tf_err::E_INVALID_ARG:         return "INVALID_ARG";
+        case tf_err::E_CLIENT_TABLE_FULL:   return "CLIENT_TABLE_FULL";
+        case tf_err::E_INITIALIZED:         return "INITIALIZED";
+        case tf_err::E_UNINITIALIZED:       return "UNINITIALIZED";
+        case tf_err::E_REGISTERED:          return "REGISTERED";
+        case tf_err::E_UNREGISTERED:        return "UNREGISTERED";
+        default:                            return "UNKNOWN";
     }
 }
 

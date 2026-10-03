@@ -38,7 +38,7 @@ typedef struct shared_region{
     ringbuffer_t c2sbuffer[MAX_CLIENTS];    //client->server ringbuffers per client
     ringbuffer_t s2cbuffer[MAX_CLIENTS];    //server->client ringbuffers per client
 
-    uint8_t seg_pool[];     //pool of actual segments for file transfer
+    uint8_t seg_pool[];     //pool of actual segments for file transfer (n_sms * sms_size)
 
 }shared_region_t;
 #endif
