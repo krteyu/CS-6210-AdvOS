@@ -35,7 +35,6 @@ static uint32_t g_next_req_id = 1;   // 0 reserved as "invalid"
 static bool g_init = false;
 static bool g_registered = false;
 
-// process-local staging — NOT shared memory, ordinary heap data
 static unordered_map<uint32_t, vector<ringnode_t>> g_pending_grants;  // req_id -> queued GRANTs
 static unordered_map<uint32_t, pendingreq_t>      g_active_requests; // req_id -> accumulated response
 
@@ -245,6 +244,7 @@ static tf_err send_file(const uint8_t *data, size_t len, transfer_mode mode, uin
             size_t chunk_len = min (len - offset, (size_t)g_sms_size);
             uint8_t *dst = segment_ptr(g_region, seg_id);
             memcpy(dst, data + offset, chunk_len);
+            g_region->segment_control[seg_id].status = SEG_FILLED;
             offset += chunk_len;
 
             bool is_last = (offset >= len);
