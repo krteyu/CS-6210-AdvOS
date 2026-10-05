@@ -142,7 +142,6 @@ static tf_err unregister_client(){
     }
 
     g_region->clients[g_client_id].pid          = -1;
-    g_region->clients[g_client_id].max_inflight = 0;
     g_region->clients[g_client_id].seg_held     = 0;
     g_region->clients[g_client_id].seg_req      = 0;
     g_region->clients[g_client_id].active       = false;
