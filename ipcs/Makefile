@@ -29,10 +29,11 @@ DEPS := $(COMMON_OBJS:.o=.d) $(SERVER_OBJS:.o=.d) $(CLIENT_OBJS:.o=.d) $(APP_OBJ
 
 LIB_TINYFILE := $(BUILD_DIR)/libtinyfile.a
 
-.PHONY: all server app clean
+.PHONY: all build server app clean
 
-# server: app not built yet (src/app is empty until the sample app exists)
-all: server
+all: build
+
+build: server app
 
 server: $(BIN_DIR)/tinyfile-server
 
