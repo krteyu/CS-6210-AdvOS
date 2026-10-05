@@ -32,6 +32,7 @@ static ringbuffer_t *g_c2sbuffer = nullptr;
 static ringbuffer_t *g_s2cbuffer = nullptr;
 
 static uint32_t g_next_req_id = 1;   // 0 reserved as "invalid"
+static uint32_t g_async_pending = 0; // number of async requests still waiting for their result
 static bool g_init = false;
 static bool g_registered = false;
 
@@ -323,6 +324,8 @@ tf_err TF_compress_async(const uint8_t *data, size_t len, uint64_t *out_req_id){
     tf_err retcode = send_file(data, len, ASYNC, req_id);
     if(retcode != tf_err::SUCCESS){
         cerr<<tf_err_str(retcode)<<endl;
+    } else {
+        g_async_pending++;
     }
     *out_req_id = req_id;
     return retcode;
@@ -360,9 +363,28 @@ tf_err TF_check_async(TF_result **out_results, size_t *out_count){
         }
     }
 
+    if(done_count > g_async_pending) g_async_pending = 0;
+    else g_async_pending -= done_count;
+
     *out_results = results;
     *out_count = done_count;
     return tf_err::SUCCESS;
+}
+
+tf_err TF_wait_async(TF_result **out_results, size_t *out_count)
+{
+    while(true)
+    {
+        tf_err retcode = TF_check_async(out_results, out_count);
+        if(retcode != tf_err::SUCCESS || *out_count > 0 || g_async_pending == 0) return retcode;
+
+        if(semop(g_s2c_semid, &wait_op, 1) == -1)
+        {
+            if(errno == EINTR) continue;
+            cerr<<tf_err_str(tf_err::E_SEMOP_FAILED)<<endl;
+            return tf_err::E_SEMOP_FAILED;
+        }
+    }
 }
 tf_err TF_cleanup(){
     tf_err retcode = unregister_client();

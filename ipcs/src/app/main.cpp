@@ -9,11 +9,9 @@
 #include <string>
 #include <utility>
 #include <vector>
-#include <unistd.h>
 
 using namespace std;
 namespace fs = std::filesystem;
-using Clock = chrono::steady_clock;
 
 typedef struct Job
 {
@@ -48,21 +46,28 @@ static bool read_file_list(const string &list_path, vector<string> &out)
     return true;
 }
 
-// Stops the clock first, so writing the output file is not counted in the CST
-static bool report(const job_t &job, const char *mode, Clock::time_point start, const uint8_t *data, size_t len, const string &output_dir)
+// get current time
+static double now_seconds()
 {
-    double seconds = chrono::duration<double>(Clock::now() - start).count();
+    return chrono::duration<double>(chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Prints the CST line, then saves the result (after the clock stops)
+static bool report(const job_t &job, const char *mode, double start, const uint8_t *data, size_t len, const string &output_dir)
+{
+    double seconds = now_seconds() - start;
     printf("TINYFILE_CST|file=%s|mode=%s|seconds=%.6f\n", job.name.c_str(), mode, seconds);
     fflush(stdout);
 
-    string out_path = (fs::path(output_dir) / (job.name + ".snappy")).string();
-    ofstream out(out_path, ios::binary);
-    out.write(reinterpret_cast<const char *>(data), len);
-    if(!out)
+    string out_path = output_dir + "/" + job.name + ".snappy";
+    FILE *f = fopen(out_path.c_str(), "wb");
+    if(f == nullptr)
     {
         fprintf(stderr, "cannot write %s\n", out_path.c_str());
         return false;
     }
+    fwrite(data, 1, len, f);
+    fclose(f);
     return true;
 }
 
@@ -74,7 +79,7 @@ static bool run_sync(vector<job_t> &jobs, const string &output_dir)
     {
         uint8_t *out;
         size_t out_len;
-        Clock::time_point start = Clock::now();
+        double start = now_seconds();
         if(TF_compress_sync(job.data.data(), job.data.size(), &out, &out_len) != tf_err::SUCCESS)
         {
             return false;
@@ -85,15 +90,14 @@ static bool run_sync(vector<job_t> &jobs, const string &output_dir)
     return ok;
 }
 
-// Submit every file, then poll until all results are back
 static bool run_async(vector<job_t> &jobs, const string &output_dir)
 {
-    map<uint64_t, pair<job_t *, Clock::time_point>> pending;   // req_id -> (job, submit time)
+    map<uint64_t, pair<job_t *, double>> pending;   // req_id->(job, submit time)
 
     for(auto &job : jobs)
     {
         uint64_t req_id;
-        Clock::time_point start = Clock::now();
+        double start = now_seconds();
         if(TF_compress_async(job.data.data(), job.data.size(), &req_id) != tf_err::SUCCESS)
         {
             return false;
@@ -106,7 +110,11 @@ static bool run_async(vector<job_t> &jobs, const string &output_dir)
     {
         TF_result *results;
         size_t count;
-        if(TF_check_async(&results, &count) != tf_err::SUCCESS) return false;
+        // sleeps until at least one result is done
+        if(TF_wait_async(&results, &count) != tf_err::SUCCESS) return false;
+
+        // empty only if the library has nothing in flight, so the rest will never come
+        if(count == 0) return false;
 
         for(size_t i = 0; i < count; i++)
         {
@@ -116,9 +124,6 @@ static bool run_async(vector<job_t> &jobs, const string &output_dir)
             pending.erase(it);
         }
         TF_free_results(results, count);
-
-        // sleep if nothing ready
-        if(count == 0) usleep(1000);
     }
     return ok;
 }
