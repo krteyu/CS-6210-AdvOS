@@ -48,6 +48,7 @@ static void grant_segments();
 static void process_compression_queue();
 static void process_send_queue();
 static int32_t find_free_segment();
+static bool has_free_segment();
 static tf_err notify_client(int client_id);
 static void handle_signal(int sig);
 
@@ -67,6 +68,14 @@ static int32_t find_free_segment(){
         }
     }
     return -1;
+}
+
+// similar to find_free_segment, but just checks it doesn't take
+static bool has_free_segment(){
+    for(uint32_t i = 0; i<g_region->n_sms; i++){
+        if(g_region->segment_control[i].status == SEG_FREE) return true;
+    }
+    return false;
 }
 
 static tf_err notify_client(int client_id){
@@ -282,7 +291,7 @@ int main(int argc, char *argv[]){
             process_compression_queue();
             did_work = true;
         }
-        if (!g_send_queue.empty() && find_free_segment() >= 0) {
+        if (!g_send_queue.empty() && has_free_segment()) {
             process_send_queue();
             did_work = true;
         }
