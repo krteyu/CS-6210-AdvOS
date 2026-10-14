@@ -45,7 +45,7 @@ static struct sembuf wait_op = { 0, -1, 0 };
 
 // ---------Helper Functions---------
 static tf_err attach_to_region();
-static tf_err register_client();
+static tf_err register_client(int freqs);
 static tf_err unregister_client();
 static tf_err detach_from_region();
 static void drain_and_route();
@@ -98,7 +98,7 @@ static tf_err attach_to_region(){
     return tf_err::SUCCESS;
 }
 
-static tf_err register_client(){
+static tf_err register_client(int freqs){
     if (!g_init) return tf_err::E_UNINITIALIZED;
     if (g_registered) return tf_err::E_REGISTERED;
 
@@ -114,6 +114,7 @@ static tf_err register_client(){
         g_region->clients[i].pid      = getpid();
         g_region->clients[i].seg_held = 0;
         g_region->clients[i].seg_req  = 0;
+        g_region->clients[i].freqs    = freqs;
 
         g_client_id    = i;
         g_c2sbuffer    = &g_region->c2sbuffer[i];     
@@ -146,6 +147,7 @@ static tf_err unregister_client(){
     g_region->clients[g_client_id].seg_held     = 0;
     g_region->clients[g_client_id].seg_req      = 0;
     g_region->clients[g_client_id].active       = false;
+    g_region->clients[g_client_id].freqs        = 1;
 
     if (semop(g_region->reg_semid, &post_op, 1) == -1) {
         return tf_err::E_SEMOP_FAILED;
@@ -293,14 +295,14 @@ static tf_err poll_response_nonblocking(){
 }
 
 // ---------External APIs---------
-tf_err TF_init(){
+tf_err TF_init(int freqs){
     tf_err retcode = attach_to_region();
     if(retcode != tf_err::SUCCESS){
         cerr<<tf_err_str(retcode)<<endl;
         return retcode;
     }
 
-    retcode = register_client();
+    retcode = register_client(freqs);
     if(retcode != tf_err::SUCCESS){
         cerr<<tf_err_str(retcode)<<endl;
     }

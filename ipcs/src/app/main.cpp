@@ -184,8 +184,6 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    // temprarily... need freqs to be passed to TF_init() probably, ignoring it now
-    (void)freqs;
 
     // load every input file now
     vector<job_t> jobs;
@@ -212,7 +210,7 @@ int main(int argc, char *argv[])
     }
 
     // init
-    if(TF_init() != tf_err::SUCCESS)
+    if(TF_init(freqs) != tf_err::SUCCESS)
     {
         fprintf(stderr, "cannot connect to the TinyFile service (is the server running?)\n");
         return 1;
