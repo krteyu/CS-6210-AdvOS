@@ -10,7 +10,7 @@ struct TF_result {
 };
 
 // ---------External APIs---------
-tf_err TF_init(int freqs);
+tf_err TF_init(uint32_t weight = 1);
 tf_err TF_compress_sync(const uint8_t *data, size_t len, uint8_t **out_compressed, size_t *out_len);
 tf_err TF_compress_async(const uint8_t *data, size_t len, uint64_t *out_req_id);
 tf_err TF_check_async(TF_result **out_results, size_t *out_count);

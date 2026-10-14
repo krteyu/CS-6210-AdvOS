@@ -8,6 +8,8 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <array>
+#include <cstdint>
 extern "C" {
 #include "snappy.h"
 }
@@ -37,10 +39,13 @@ volatile sig_atomic_t running = 1;
 
 using req_key_t = pair<int, uint32_t>;
 static map<req_key_t, in_req_t> g_incoming;     //maps (client_id,req_id) -> local data/metadata buffer
-static deque<req_key_t> g_compression_queue;    //FIFO for compression
+static deque<req_key_t> g_compression_queue[MAX_CLIENTS];    //FIFO for compression
 static map<req_key_t, out_req_t> g_outgoing;    //maps (client_id,req_id) -> local compressed output buffer
-static deque<req_key_t> g_send_queue;           //FIFO for outgoing requests
+static deque<req_key_t> g_send_queue[MAX_CLIENTS];           //FIFO for outgoing requests
 static deque<uint32_t> g_pending_seg_req[MAX_CLIENTS];
+static array<int64_t, MAX_CLIENTS> g_grant_credit{};
+static array<int64_t, MAX_CLIENTS> g_compress_credit{};
+static array<int64_t, MAX_CLIENTS> g_send_credit{};
 
 static struct sembuf post_op = { 0, +1, 0 };
 static struct sembuf wait_op = { 0, -1, 0 };
@@ -61,6 +66,61 @@ static void handle_signal(int sig);
 void handle_signal(int sig) {
     (void)sig;
     running = 0;
+}
+
+template <class Eligible>
+static int pick_weighted(array<int64_t, MAX_CLIENTS>& credit, Eligible eligible){
+    int best = -1;
+    int32_t total_weight = 0;
+
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (!g_region->clients[c].active || !eligible(c)) {
+            credit[c] = 0;
+            continue;
+        }
+
+        int32_t weight = max<uint32_t>(1, g_region->clients[c].weight);
+
+        credit[c] += weight;
+        total_weight += weight;
+
+        if (best < 0 || credit[c] > credit[best])
+            best = c;
+    }
+
+    if (best >= 0)
+        credit[best] -= total_weight;
+
+    return best;
+}
+
+static bool can_enqueue_client(int c) {
+    const auto& r = g_region->s2cbuffer[c];
+
+    return r.head.load(memory_order_acquire) -
+           r.tail.load(memory_order_acquire) <
+           r.capacity;
+}
+
+static bool has_compression_work() {
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (g_region->clients[c].active &&
+            !g_compression_queue[c].empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool has_send_work() {
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (g_region->clients[c].active &&
+            !g_send_queue[c].empty() &&
+            can_enqueue_client(c)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static int32_t find_free_segment(){
@@ -122,7 +182,7 @@ static tf_err parse_rings(){
 
                     if (st == FIN || st == SNGL) {
                         ir.complete = true;
-                        g_compression_queue.push_back(key);
+                        g_compression_queue[c].push_back(key);
                     }
                     break;
 
@@ -140,29 +200,63 @@ static tf_err parse_rings(){
     return tf_err::SUCCESS;
 }
 
-static void grant_segments(){
-    for (int c = 0; c < MAX_CLIENTS; c++){
-        if (!g_region->clients[c].active) continue;
-        while(!g_pending_seg_req[c].empty() && g_region->clients[c].seg_held < g_region->clients[c].max_inflight){
-            int32_t seg = find_free_segment();
-            if (seg < 0) return;        //Segment pool exhausted, keep waiting for segment relinquishes
-            uint32_t req_id = g_pending_seg_req[c].front();
-            g_pending_seg_req[c].pop_front();
-            g_region->clients[c].seg_req--;
-            g_region->clients[c].seg_held++;
-            g_region->segment_control[seg].owner  = static_cast<uint16_t>(c);
-            ringnode_t grant_msg = createMsg(SEG_GRANT, SNGL, SYNC, req_id, static_cast<uint32_t>(seg), 0);
-            g_region->s2cbuffer[c].push(grant_msg);
-            notify_client(c);
+static void grant_segments() {
+    while (has_free_segment()) {
+
+        int c = pick_weighted(
+            g_grant_credit,
+            [](int c) {
+                const client_t& client =
+                    g_region->clients[c];
+
+                return !g_pending_seg_req[c].empty() &&
+                       client.seg_held < client.max_inflight &&
+                       can_enqueue_client(c);
+            }
+        );
+
+        if (c < 0) return;
+
+        int32_t seg = find_free_segment();
+        if (seg < 0) return;
+
+        uint32_t req_id = g_pending_seg_req[c].front();
+
+        ringnode_t grant_msg = createMsg(
+            SEG_GRANT, SNGL, SYNC, req_id,
+            static_cast<uint32_t>(seg), 0
+        );
+
+        g_region->segment_control[seg].owner =
+            static_cast<uint16_t>(c);
+
+        if (!g_region->s2cbuffer[c].push(grant_msg)) {
+            g_region->segment_control[seg].status = SEG_FREE;
+            g_region->segment_control[seg].owner = 0;
+            return;
         }
+
+        g_pending_seg_req[c].pop_front();
+
+        g_region->clients[c].seg_req--;
+        g_region->clients[c].seg_held++;
+
+        notify_client(c);
     }
 }
-//TODO: Add snappy integration, currently the "compressed" file is just 25% of the original data
-static void process_compression_queue(snappy_env& env){
-    if (g_compression_queue.empty()) return;
 
-    req_key_t key = g_compression_queue.front();
-    g_compression_queue.pop_front();
+static void process_compression_queue(snappy_env& env){
+    int c = pick_weighted(
+        g_compress_credit,
+        [](int c) {
+            return !g_compression_queue[c].empty();
+        }
+    );
+
+    if (c < 0) return;
+
+    req_key_t key = g_compression_queue[c].front();
+    g_compression_queue[c].pop_front();
 
     auto it = g_incoming.find(key);
     if (it == g_incoming.end()) return;
@@ -190,62 +284,100 @@ static void process_compression_queue(snappy_env& env){
     out.data.resize(compressed_len);
 
     g_outgoing[key] = move(out);
-    g_send_queue.push_back(key);
+    g_send_queue[c].push_back(key);
     g_incoming.erase(it);
 }
 
-static void process_send_queue(){
-    while (!g_send_queue.empty()) {
-        req_key_t key = g_send_queue.front();
+static void process_send_queue() {
+    if (!has_free_segment()) return;
 
-        auto it = g_outgoing.find(key);
-        if (it == g_outgoing.end()) {
-            // nothing to send for this key anymore -- drop it and move on
-            g_send_queue.pop_front();
-            continue;
+    int c = pick_weighted(
+        g_send_credit,
+        [](int c) {
+            return !g_send_queue[c].empty() &&
+                   can_enqueue_client(c);
         }
-        out_req_t &out = it->second;
+    );
 
-        int32_t seg = find_free_segment();
-        if (seg < 0) return;   // pool exhausted right now -- try again on a later pass
+    if (c < 0) return;
 
-        size_t total_len   = out.data.size();
-        size_t remaining    = total_len - out.offset_sent;
-        size_t chunk_len    = std::min(remaining, (size_t)g_region->sms_size);
+    req_key_t key = g_send_queue[c].front();
 
-        uint8_t *dst = segment_ptr(g_region, static_cast<uint32_t>(seg));
-        memcpy(dst, out.data.data() + out.offset_sent, chunk_len);
-        g_region->segment_control[seg].status = SEG_FILLED;
-        g_region->segment_control[seg].owner = static_cast<uint16_t>(out.client_id);
+    auto it = g_outgoing.find(key);
 
-        bool is_first = (out.offset_sent == 0);
-        out.offset_sent += chunk_len;
-        bool is_last = (out.offset_sent >= total_len);
-
-        status st;
-        if (is_first && is_last) {
-            st = SNGL;
-        } else if (is_first) {
-            st = INIT;
-        } else if (is_last) {
-            st = FIN;
-        } else {
-            st = CONT;
-        }
-
-        ringnode_t data_msg = createMsg(DATA_READY, st, out.mode, out.req_id, static_cast<uint32_t>(seg), static_cast<uint32_t>(chunk_len));
-        g_region->s2cbuffer[out.client_id].push(data_msg);
-        notify_client(out.client_id);
-
-        if (is_last) {
-            g_outgoing.erase(it);
-            g_send_queue.pop_front();
-        } else {
-            // more chunks remain for this request -- stop here rather than writing
-            // ahead into a second segment before the client has read/released this one
-            break;
-        }
+    if (it == g_outgoing.end()) {
+        g_send_queue[c].pop_front();
+        return;
     }
+
+    out_req_t& out = it->second;
+
+    int32_t seg = find_free_segment();
+    if (seg < 0) return;
+
+    size_t total_len = out.data.size();
+    size_t remaining = total_len - out.offset_sent;
+
+    size_t chunk_len = min(
+        remaining,
+        static_cast<size_t>(g_region->sms_size)
+    );
+
+    uint8_t* dst = segment_ptr(
+        g_region,
+        static_cast<uint32_t>(seg)
+    );
+
+    if (chunk_len > 0) {
+        memcpy(
+            dst,
+            out.data.data() + out.offset_sent,
+            chunk_len
+        );
+    }
+
+    bool is_first = (out.offset_sent == 0);
+    bool is_last =
+        (out.offset_sent + chunk_len >= total_len);
+
+    status st;
+
+    if (is_first && is_last)
+        st = SNGL;
+    else if (is_first)
+        st = INIT;
+    else if (is_last)
+        st = FIN;
+    else
+        st = CONT;
+
+    ringnode_t data_msg = createMsg(
+        DATA_READY,
+        st,
+        out.mode,
+        out.req_id,
+        static_cast<uint32_t>(seg),
+        static_cast<uint32_t>(chunk_len)
+    );
+
+    g_region->segment_control[seg].status = SEG_FILLED;
+    g_region->segment_control[seg].owner =
+        static_cast<uint16_t>(c);
+
+    if (!g_region->s2cbuffer[c].push(data_msg)) {
+        g_region->segment_control[seg].status = SEG_FREE;
+        g_region->segment_control[seg].owner = 0;
+        return;
+    }
+
+    out.offset_sent += chunk_len;
+
+    if (is_last) {
+        g_outgoing.erase(it);
+        g_send_queue[c].pop_front();
+    }
+
+    notify_client(c);
 }
 
 int main(int argc, char *argv[]){
@@ -311,11 +443,11 @@ int main(int argc, char *argv[]){
     while (running) {
         bool did_work = false;
 
-        if (!g_compression_queue.empty()) {
+        if (has_compression_work()) {
             process_compression_queue(env);
             did_work = true;
         }
-        if (!g_send_queue.empty() && has_free_segment()) {
+        if (has_send_work() && has_free_segment()) {
             process_send_queue();
             did_work = true;
         }

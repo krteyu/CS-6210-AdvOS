@@ -133,7 +133,7 @@ int main(int argc, char *argv[])
     vector<string> paths;
     string state;
     string output_dir = "out";
-    int freqs = 1;
+    uint32_t freqs = 1;
 
     // passing arguments, works
     for(int i = 1; i < argc; i++)
@@ -169,7 +169,7 @@ int main(int argc, char *argv[])
         }
         else if(arg == "--freqs")
         {
-            freqs = atoi(val.c_str());
+            freqs = static_cast<uint32_t>(atoi(val.c_str()));
         }
         else
         {

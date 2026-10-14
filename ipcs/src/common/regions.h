@@ -18,7 +18,7 @@ typedef struct client{
     uint16_t max_inflight;
     uint16_t seg_held;
     uint16_t seg_req;
-    uint16_t freqs;
+    uint32_t weight;
     int s2c_semid;
 }client_t;
 
