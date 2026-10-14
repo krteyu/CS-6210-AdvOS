@@ -8,6 +8,9 @@
 #include <vector>
 #include <utility>
 #include <algorithm>
+extern "C" {
+#include "snappy.h"
+}
 using namespace std;
 
 // ---------Structures---------
@@ -45,7 +48,7 @@ static struct sembuf wait_op = { 0, -1, 0 };
 // ---------Helper Functions---------
 static tf_err parse_rings();
 static void grant_segments();
-static void process_compression_queue();
+static void process_compression_queue(snappy_env& env);
 static void process_send_queue();
 static int32_t find_free_segment();
 static bool has_free_segment();
@@ -155,7 +158,7 @@ static void grant_segments(){
     }
 }
 //TODO: Add snappy integration, currently the "compressed" file is just 25% of the original data
-static void process_compression_queue(){
+static void process_compression_queue(snappy_env& env){
     if (g_compression_queue.empty()) return;
 
     req_key_t key = g_compression_queue.front();
@@ -169,12 +172,26 @@ static void process_compression_queue(){
     out.req_id = it->second.req_id;
     out.mode = it->second.mode;
     out.offset_sent = 0;
-    out.data.assign(it->second.data.begin(), it->second.data.begin() + it->second.data.size()/4);
 
-    g_outgoing[key] = std::move(out);
+    const vector<uint8_t>& input = it->second.data;
+    size_t max_len = snappy_max_compressed_length(it->second.data.size());
+    out.data.resize(max_len);
+    size_t compressed_len = 0;
+    int rc = snappy_compress(&env,
+                            reinterpret_cast<const char*>(input.data()),
+                            input.size(),
+                            reinterpret_cast<char*>(out.data.data()),
+                            &compressed_len);
+    if(rc != 0){
+        fprintf(stderr, "Snappy compression failed: %d\n", rc);
+        running = 0;
+        return;
+    }
+    out.data.resize(compressed_len);
+
+    g_outgoing[key] = move(out);
     g_send_queue.push_back(key);
     g_incoming.erase(it);
-
 }
 
 static void process_send_queue(){
@@ -279,6 +296,13 @@ int main(int argc, char *argv[]){
         destroy_region(g_region, g_shm_id);
         return 1;
     }
+    snappy_env env{};
+
+    if (snappy_init_env(&env) != 0) {
+        fprintf(stderr, "Snappy initialization failed\n");
+        destroy_region(g_region, g_shm_id);
+        return 1;
+    }
 
     printf("TINYFILE_READY\n");
     fflush(stdout);
@@ -288,7 +312,7 @@ int main(int argc, char *argv[]){
         bool did_work = false;
 
         if (!g_compression_queue.empty()) {
-            process_compression_queue();
+            process_compression_queue(env);
             did_work = true;
         }
         if (!g_send_queue.empty() && has_free_segment()) {
@@ -314,6 +338,7 @@ int main(int argc, char *argv[]){
     }
 
     //Cleanup
+    snappy_free_env(&env);
     destroy_region(g_region, g_shm_id);
     return 0;
 }

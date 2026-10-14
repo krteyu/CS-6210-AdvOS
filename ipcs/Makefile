@@ -9,6 +9,7 @@ APP_DIR     := $(SRC_DIR)/app
 SNAPPY_DIR  := snappy
 
 BUILD_DIR   := build
+OUT_DIR		:= out
 BIN_DIR     := .
 
 INCLUDES := -I$(COMMON_DIR) -I$(SERVER_DIR) -I$(CLIENT_DIR) -I$(SNAPPY_DIR)
@@ -40,7 +41,7 @@ server: $(BIN_DIR)/tinyfile-server
 app: $(LIB_TINYFILE) $(BIN_DIR)/sample-app
 
 # ---- Server binary: common + server objects ----
-$(BIN_DIR)/tinyfile-server: $(COMMON_OBJS) $(SERVER_OBJS)
+$(BIN_DIR)/tinyfile-server: $(COMMON_OBJS) $(SERVER_OBJS) $(BUILD_DIR)/snappy.o
 	$(CXX) $(CXXFLAGS) -o $@ $^
 
 # ---- Client static library: common + client objects ----
@@ -56,9 +57,14 @@ $(BUILD_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
 
+$(BUILD_DIR)/snappy.o: $(SNAPPY_DIR)/snappy.c $(SNAPPY_DIR)/snappy.h $(SNAPPY_DIR)/compat.h
+	@mkdir -p $(dir $@)
+	gcc -std=gnu11 -O2 -I$(SNAPPY_DIR) -c $< -o $@
+
 -include $(DEPS)
 
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f $(BIN_DIR)/tinyfile-server $(BIN_DIR)/sample-app
+	rm -rf $(OUT_DIR)
 	rm -f /tmp/tinyfile_server_info.txt
