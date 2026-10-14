@@ -2,8 +2,8 @@
 """End-to-end TinyFile tests using the bundled Snappy C decoder (no pip packages).
 
 Usage (from Project2/ipcs):
-    python3 /path/to/tinyfile_test.py .
-    python3 /path/to/tinyfile_test.py . --matrix
+    python3 tests/tinyfile_test.py .
+    python3 tests/tinyfile_test.py . --matrix
 
 Never run while another TinyFile service is already running.
 """
