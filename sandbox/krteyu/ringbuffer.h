@@ -2,6 +2,7 @@
 #define __RINGBUFFER_H__
 #include <atomic>
 #include <cstdint>
+#define RING_MAX_SLOTS 16
 
 /*Control Field Structure
     Bits 0-1:   opcode    (0x00-SEG_REQ,  0x01-SEG_GRANT,   0x10-DATA_READY)
@@ -56,7 +57,6 @@ inline transfer_mode get_transfer_mode(uint8_t ctl){
     return (ctl & TFMODE_BIT)? ASYNC: SYNC;
 }
 
-#define RING_MAX_SLOTS 16
 typedef struct RingNode {
     uint32_t segment_id;
     uint32_t data_len;
