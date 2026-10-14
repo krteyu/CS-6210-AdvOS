@@ -63,13 +63,14 @@ static tf_err notify_client(int client_id);
 static void handle_signal(int sig);
 
 // ---------Small helpers---------
-static void trace_qos(const char* stage, int client, uint32_t req_id) {
+static void trace_qos(const char* stage, int client, uint32_t req_id, uint32_t eligible_mask) {
     gt_debug_logs(stderr,
-        "QOS|stage=%s|client=%d|weight=%u|req=%u\n",
+        "QOS|stage=%s|client=%d|weight=%u|req=%u|mask=%u\n",
         stage,
         client,
         g_region->clients[client].weight,
-        req_id
+        req_id,
+        eligible_mask
     );
 }
 
@@ -81,9 +82,10 @@ static bool can_enqueue_client(int c) {
            r.capacity;
 }
 
-static int pick_weighted(array<int64_t, MAX_CLIENTS>& credit, bool (*eligible)(int)){
+static int pick_weighted(array<int64_t, MAX_CLIENTS>& credit, bool (*eligible)(int), uint32_t& eligible_mask){
     int best = -1;
-    int32_t total_weight = 0;
+    int64_t total_weight = 0;
+    eligible_mask = 0;
 
     for (int c = 0; c < MAX_CLIENTS; ++c) {
         if (!g_region->clients[c].active || !eligible(c)) {
@@ -91,7 +93,9 @@ static int pick_weighted(array<int64_t, MAX_CLIENTS>& credit, bool (*eligible)(i
             continue;
         }
 
-        int32_t weight = max<uint32_t>(1, g_region->clients[c].weight);
+        eligible_mask |= (1u << c);
+
+        int64_t weight = max<uint32_t>(1, g_region->clients[c].weight);
 
         credit[c] += weight;
         total_weight += weight;
@@ -229,8 +233,8 @@ static tf_err parse_rings(){
 
 static void grant_segments() {
     while (has_free_segment()) {
-
-        int c = pick_weighted(g_grant_credit, eligible_for_grant);
+        uint32_t mask = 0;
+        int c = pick_weighted(g_grant_credit, eligible_for_grant, mask);
 
         if (c < 0) return;
 
@@ -257,20 +261,21 @@ static void grant_segments() {
 
         g_region->clients[c].seg_req--;
         g_region->clients[c].seg_held++;
-        trace_qos("grant", c, req_id);
+        trace_qos("grant", c, req_id, mask);
 
         notify_client(c);
     }
 }
 
 static void process_compression_queue(snappy_env& env){
-    int c = pick_weighted(g_compress_credit, eligible_for_compression);
+    uint32_t mask = 0;
+    int c = pick_weighted(g_compress_credit, eligible_for_compression, mask);
 
     if (c < 0) return;
 
     req_key_t key = g_compression_queue[c].front();
     g_compression_queue[c].pop_front();
-    trace_qos("compress", c, key.second);
+    trace_qos("compress", c, key.second, mask);
 
     auto it = g_incoming.find(key);
     if (it == g_incoming.end()) return;
@@ -304,8 +309,8 @@ static void process_compression_queue(snappy_env& env){
 
 static void process_send_queue() {
     if (!has_free_segment()) return;
-
-    int c = pick_weighted(g_send_credit, eligible_for_send);
+    uint32_t mask = 0;
+    int c = pick_weighted(g_send_credit, eligible_for_send, mask);
 
     if (c < 0) return;
 
@@ -371,7 +376,7 @@ static void process_send_queue() {
     }
 
     out.offset_sent += chunk_len;
-    trace_qos("send", c, out.req_id);
+    trace_qos("send", c, out.req_id, mask);
 
     if (is_last) {
         g_outgoing.erase(it);

@@ -7,6 +7,7 @@ SERVER_DIR  := $(SRC_DIR)/server
 CLIENT_DIR  := $(SRC_DIR)/client
 APP_DIR     := $(SRC_DIR)/app
 SNAPPY_DIR  := snappy
+TEST_RUN	:= test_runs
 
 BUILD_DIR   := build
 OUT_DIR		:= out
@@ -68,3 +69,6 @@ clean:
 	rm -f $(BIN_DIR)/tinyfile-server $(BIN_DIR)/sample-app
 	rm -rf $(OUT_DIR)
 	rm -f /tmp/tinyfile_server_info.txt
+
+clean_runs:
+	rm -rf $(TEST_RUN)
