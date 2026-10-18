@@ -173,7 +173,7 @@ static bool has_free_segment(){
 }
 
 static tf_err notify_client(int client_id){
-    if(semop(g_region->clients[client_id].s2c_semid, &post_op, 1) == -1){
+    if(notify_if_needed(g_region->clients[client_id].s2c_semid)){
         return tf_err::E_SEMOP_FAILED;
     }
     return tf_err::SUCCESS;

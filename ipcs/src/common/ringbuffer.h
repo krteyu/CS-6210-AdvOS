@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdint>
 #include "protocols.h"
+#include "include.h"
 #define RING_MAX_SLOTS 16
 
 typedef struct RingNode {
@@ -52,5 +53,22 @@ inline ringnode_t createMsg(opcode op, status st, transfer_mode tfm, uint32_t re
     msg.data_len = data_len;
     msg.control_field = control_field;
     return msg;
+}
+inline bool notify_if_needed(int semid) {
+    struct sembuf ops[2] = {
+        {0, 0, IPC_NOWAIT},  // Require semaphore == 0
+        {0, 1, IPC_NOWAIT}   // Set semaphore to 1
+    };
+
+    if (semop(semid, ops, 2) == 0) {
+        return true; // Posted notification
+    }
+
+    if (errno == EAGAIN) {
+        return true; // Notification already pending
+    }
+
+    perror("notify_if_needed");
+    return false;
 }
 #endif
