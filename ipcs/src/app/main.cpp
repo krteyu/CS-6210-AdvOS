@@ -1,4 +1,5 @@
 #include "tinyfile.h"
+#include "debug.h"
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -21,7 +22,7 @@ typedef struct Job
 
 static void usage(const char *prog)
 {
-    fprintf(stderr, "Usage: %s (--file <path> | --files <list>) --state SYNC|ASYNC [--output_dir <dir>] [--freqs <weight>]\n", prog);
+    gt_debug_logs(stderr, "Usage: %s (--file <path> | --files <list>) --state SYNC|ASYNC [--output_dir <dir>] [--freqs <weight>]\n", prog);
 }
 
 static bool read_file(const string &path, vector<uint8_t> &out)
@@ -63,7 +64,7 @@ static bool report(const job_t &job, const char *mode, double start, const uint8
     FILE *f = fopen(out_path.c_str(), "wb");
     if(f == nullptr)
     {
-        fprintf(stderr, "cannot write %s\n", out_path.c_str());
+        gt_debug_logs(stderr, "cannot write %s\n", out_path.c_str());
         return false;
     }
     fwrite(data, 1, len, f);
@@ -133,7 +134,7 @@ int main(int argc, char *argv[])
     vector<string> paths;
     string state;
     string output_dir = "out";
-    int freqs = 1;
+    uint32_t freqs = 1;
 
     // passing arguments, works
     for(int i = 1; i < argc; i++)
@@ -141,7 +142,7 @@ int main(int argc, char *argv[])
         string arg = argv[i];
         if(i + 1 >= argc)
         {
-            fprintf(stderr, "Missing value for %s\n", arg.c_str());
+            gt_debug_logs(stderr, "Missing value for %s\n", arg.c_str());
             usage(argv[0]);
             return 1;
         }
@@ -155,7 +156,7 @@ int main(int argc, char *argv[])
         {
             if(!read_file_list(val, paths))
             {
-                fprintf(stderr, "cannot read file list %s\n", val.c_str());
+                gt_debug_logs(stderr, "cannot read file list %s\n", val.c_str());
                 return 1;
             }
         }
@@ -169,11 +170,11 @@ int main(int argc, char *argv[])
         }
         else if(arg == "--freqs")
         {
-            freqs = atoi(val.c_str());
+            freqs = static_cast<uint32_t>(atoi(val.c_str()));
         }
         else
         {
-            fprintf(stderr, "Unknown argument: %s\n", arg.c_str());
+            gt_debug_logs(stderr, "Unknown argument: %s\n", arg.c_str());
             usage(argv[0]);
             return 1;
         }
@@ -184,8 +185,6 @@ int main(int argc, char *argv[])
         usage(argv[0]);
         return 1;
     }
-    // temprarily... need freqs to be passed to TF_init() probably, ignoring it now
-    (void)freqs;
 
     // load every input file now
     vector<job_t> jobs;
@@ -196,7 +195,7 @@ int main(int argc, char *argv[])
         job.name = fs::path(p).filename().string();
         if(!read_file(p, job.data))
         {
-            fprintf(stderr, "cannot read %s, skipping\n", p.c_str());
+            gt_debug_logs(stderr, "cannot read %s, skipping\n", p.c_str());
             ok = false;
             continue;
         }
@@ -207,14 +206,14 @@ int main(int argc, char *argv[])
     fs::create_directories(output_dir, ec);
     if(ec)
     {
-        fprintf(stderr, "cannot create output dir %s: %s\n", output_dir.c_str(), ec.message().c_str());
+        gt_debug_logs(stderr, "cannot create output dir %s: %s\n", output_dir.c_str(), ec.message().c_str());
         return 1;
     }
 
     // init
-    if(TF_init() != tf_err::SUCCESS)
+    if(TF_init(freqs) != tf_err::SUCCESS)
     {
-        fprintf(stderr, "cannot connect to the TinyFile service (is the server running?)\n");
+        gt_debug_logs(stderr, "cannot connect to the TinyFile service (is the server running?)\n");
         return 1;
     }
 

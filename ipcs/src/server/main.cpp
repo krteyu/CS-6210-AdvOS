@@ -3,11 +3,15 @@
 #include "region_setup.h"
 #include "ringbuffer.h"
 #include "shm_common.h"
+#include "debug.h"
 #include <map>
 #include <deque>
 #include <vector>
 #include <utility>
 #include <algorithm>
+#include <array>
+#include <cstdint>
+#include <cstdlib>
 extern "C" {
 #include "snappy.h"
 }
@@ -36,11 +40,14 @@ int g_shm_id = -1;
 volatile sig_atomic_t running = 1;
 
 using req_key_t = pair<int, uint32_t>;
-static map<req_key_t, in_req_t> g_incoming;     //maps (client_id,req_id) -> local data/metadata buffer
-static deque<req_key_t> g_compression_queue;    //FIFO for compression
-static map<req_key_t, out_req_t> g_outgoing;    //maps (client_id,req_id) -> local compressed output buffer
-static deque<req_key_t> g_send_queue;           //FIFO for outgoing requests
+static map<req_key_t, in_req_t> g_incoming;                 //maps (client_id,req_id) -> local data/metadata buffer
+static deque<req_key_t> g_compression_queue[MAX_CLIENTS];   //FIFO for compression
+static map<req_key_t, out_req_t> g_outgoing;                //maps (client_id,req_id) -> local compressed output buffer
+static deque<req_key_t> g_send_queue[MAX_CLIENTS];          //FIFO for outgoing requests
 static deque<uint32_t> g_pending_seg_req[MAX_CLIENTS];
+static array<int64_t, MAX_CLIENTS> g_grant_credit{};    //Credits per client for segment grant
+static array<int64_t, MAX_CLIENTS> g_compress_credit{}; //Credits per client for segment grant
+static array<int64_t, MAX_CLIENTS> g_send_credit{};     //Credits per client for segment grant
 
 static struct sembuf post_op = { 0, +1, 0 };
 static struct sembuf wait_op = { 0, -1, 0 };
@@ -55,7 +62,91 @@ static bool has_free_segment();
 static tf_err notify_client(int client_id);
 static void handle_signal(int sig);
 
-// ---------Small inline helpers---------
+// ---------Small helpers---------
+static void trace_qos(const char* stage, int client, uint32_t req_id, uint32_t eligible_mask) {
+    gt_debug_logs(stderr,
+        "QOS|stage=%s|client=%d|weight=%u|req=%u|mask=%u\n",
+        stage,
+        client,
+        g_region->clients[client].weight,
+        req_id,
+        eligible_mask
+    );
+}
+
+static bool can_enqueue_client(int c) {
+    const auto& r = g_region->s2cbuffer[c];
+
+    return r.head.load(memory_order_acquire) -
+           r.tail.load(memory_order_acquire) <
+           r.capacity;
+}
+
+static int pick_weighted(array<int64_t, MAX_CLIENTS>& credit, bool (*eligible)(int), uint32_t& eligible_mask){
+    int best = -1;
+    int64_t total_weight = 0;
+    eligible_mask = 0;
+
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (!g_region->clients[c].active || !eligible(c)) {
+            credit[c] = 0;
+            continue;
+        }
+
+        eligible_mask |= (1u << c);
+
+        int64_t weight = max<uint32_t>(1, g_region->clients[c].weight);
+
+        credit[c] += weight;
+        total_weight += weight;
+
+        if (best < 0 || credit[c] > credit[best])
+            best = c;
+    }
+
+    if (best >= 0)
+        credit[best] -= total_weight;
+
+    return best;
+}
+
+static inline bool eligible_for_grant(int c){
+    const client_t& client = g_region->clients[c];
+
+    return !g_pending_seg_req[c].empty() &&
+           client.seg_held < client.max_inflight &&
+           can_enqueue_client(c);
+}
+
+static inline bool eligible_for_compression(int c){
+    return !g_compression_queue[c].empty();
+}
+
+static inline bool eligible_for_send(int c){
+    return !g_send_queue[c].empty() &&
+           can_enqueue_client(c);
+}
+
+static bool has_compression_work() {
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (g_region->clients[c].active &&
+            !g_compression_queue[c].empty()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool has_send_work() {
+    for (int c = 0; c < MAX_CLIENTS; ++c) {
+        if (g_region->clients[c].active &&
+            !g_send_queue[c].empty() &&
+            can_enqueue_client(c)) {
+            return true;
+        }
+    }
+    return false;
+}
 
 // ---------Definitions---------
 void handle_signal(int sig) {
@@ -122,7 +213,7 @@ static tf_err parse_rings(){
 
                     if (st == FIN || st == SNGL) {
                         ir.complete = true;
-                        g_compression_queue.push_back(key);
+                        g_compression_queue[c].push_back(key);
                     }
                     break;
 
@@ -140,29 +231,51 @@ static tf_err parse_rings(){
     return tf_err::SUCCESS;
 }
 
-static void grant_segments(){
-    for (int c = 0; c < MAX_CLIENTS; c++){
-        if (!g_region->clients[c].active) continue;
-        while(!g_pending_seg_req[c].empty() && g_region->clients[c].seg_held < g_region->clients[c].max_inflight){
-            int32_t seg = find_free_segment();
-            if (seg < 0) return;        //Segment pool exhausted, keep waiting for segment relinquishes
-            uint32_t req_id = g_pending_seg_req[c].front();
-            g_pending_seg_req[c].pop_front();
-            g_region->clients[c].seg_req--;
-            g_region->clients[c].seg_held++;
-            g_region->segment_control[seg].owner  = static_cast<uint16_t>(c);
-            ringnode_t grant_msg = createMsg(SEG_GRANT, SNGL, SYNC, req_id, static_cast<uint32_t>(seg), 0);
-            g_region->s2cbuffer[c].push(grant_msg);
-            notify_client(c);
+static void grant_segments() {
+    while (has_free_segment()) {
+        uint32_t mask = 0;
+        int c = pick_weighted(g_grant_credit, eligible_for_grant, mask);
+
+        if (c < 0) return;
+
+        int32_t seg = find_free_segment();
+        if (seg < 0) return;
+
+        uint32_t req_id = g_pending_seg_req[c].front();
+
+        ringnode_t grant_msg = createMsg(
+            SEG_GRANT, SNGL, SYNC, req_id,
+            static_cast<uint32_t>(seg), 0
+        );
+
+        g_region->segment_control[seg].owner =
+            static_cast<uint16_t>(c);
+
+        if (!g_region->s2cbuffer[c].push(grant_msg)) {
+            g_region->segment_control[seg].status = SEG_FREE;
+            g_region->segment_control[seg].owner = 0;
+            return;
         }
+
+        g_pending_seg_req[c].pop_front();
+
+        g_region->clients[c].seg_req--;
+        g_region->clients[c].seg_held++;
+        trace_qos("grant", c, req_id, mask);
+
+        notify_client(c);
     }
 }
-//TODO: Add snappy integration, currently the "compressed" file is just 25% of the original data
-static void process_compression_queue(snappy_env& env){
-    if (g_compression_queue.empty()) return;
 
-    req_key_t key = g_compression_queue.front();
-    g_compression_queue.pop_front();
+static void process_compression_queue(snappy_env& env){
+    uint32_t mask = 0;
+    int c = pick_weighted(g_compress_credit, eligible_for_compression, mask);
+
+    if (c < 0) return;
+
+    req_key_t key = g_compression_queue[c].front();
+    g_compression_queue[c].pop_front();
+    trace_qos("compress", c, key.second, mask);
 
     auto it = g_incoming.find(key);
     if (it == g_incoming.end()) return;
@@ -183,69 +296,94 @@ static void process_compression_queue(snappy_env& env){
                             reinterpret_cast<char*>(out.data.data()),
                             &compressed_len);
     if(rc != 0){
-        fprintf(stderr, "Snappy compression failed: %d\n", rc);
+        gt_debug_logs(stderr, "Snappy compression failed: %d\n", rc);
         running = 0;
         return;
     }
     out.data.resize(compressed_len);
 
     g_outgoing[key] = move(out);
-    g_send_queue.push_back(key);
+    g_send_queue[c].push_back(key);
     g_incoming.erase(it);
 }
 
-static void process_send_queue(){
-    while (!g_send_queue.empty()) {
-        req_key_t key = g_send_queue.front();
+static void process_send_queue() {
+    if (!has_free_segment()) return;
+    uint32_t mask = 0;
+    int c = pick_weighted(g_send_credit, eligible_for_send, mask);
 
-        auto it = g_outgoing.find(key);
-        if (it == g_outgoing.end()) {
-            // nothing to send for this key anymore -- drop it and move on
-            g_send_queue.pop_front();
-            continue;
-        }
-        out_req_t &out = it->second;
+    if (c < 0) return;
 
-        int32_t seg = find_free_segment();
-        if (seg < 0) return;   // pool exhausted right now -- try again on a later pass
+    req_key_t key = g_send_queue[c].front();
 
-        size_t total_len   = out.data.size();
-        size_t remaining    = total_len - out.offset_sent;
-        size_t chunk_len    = std::min(remaining, (size_t)g_region->sms_size);
+    auto it = g_outgoing.find(key);
 
-        uint8_t *dst = segment_ptr(g_region, static_cast<uint32_t>(seg));
-        memcpy(dst, out.data.data() + out.offset_sent, chunk_len);
-        g_region->segment_control[seg].status = SEG_FILLED;
-        g_region->segment_control[seg].owner = static_cast<uint16_t>(out.client_id);
-
-        bool is_first = (out.offset_sent == 0);
-        out.offset_sent += chunk_len;
-        bool is_last = (out.offset_sent >= total_len);
-
-        status st;
-        if (is_first && is_last) {
-            st = SNGL;
-        } else if (is_first) {
-            st = INIT;
-        } else if (is_last) {
-            st = FIN;
-        } else {
-            st = CONT;
-        }
-
-        ringnode_t data_msg = createMsg(DATA_READY, st, out.mode, out.req_id, static_cast<uint32_t>(seg), static_cast<uint32_t>(chunk_len));
-        g_region->s2cbuffer[out.client_id].push(data_msg);
-        notify_client(out.client_id);
-
-        if (is_last) {
-            g_outgoing.erase(it);
-            g_send_queue.pop_front();
-        } else {
-            // more chunks remain for this request -- stop here rather than writing
-            // ahead into a second segment before the client has read/released this one
-            break;
-        }
+    if (it == g_outgoing.end()) {
+        g_send_queue[c].pop_front();
+        return;
     }
+
+    out_req_t& out = it->second;
+
+    int32_t seg = find_free_segment();
+    if (seg < 0) return;
+
+    size_t total_len = out.data.size();
+    size_t remaining = total_len - out.offset_sent;
+
+    size_t chunk_len = min(remaining, static_cast<size_t>(g_region->sms_size));
+
+    uint8_t* dst = segment_ptr(g_region, static_cast<uint32_t>(seg));
+
+    if (chunk_len > 0) {
+        memcpy(
+            dst,
+            out.data.data() + out.offset_sent,
+            chunk_len
+        );
+    }
+
+    bool is_first = (out.offset_sent == 0);
+    bool is_last = (out.offset_sent + chunk_len >= total_len);
+
+    status st;
+
+    if (is_first && is_last)
+        st = SNGL;
+    else if (is_first)
+        st = INIT;
+    else if (is_last)
+        st = FIN;
+    else
+        st = CONT;
+
+    ringnode_t data_msg = createMsg(
+        DATA_READY,
+        st,
+        out.mode,
+        out.req_id,
+        static_cast<uint32_t>(seg),
+        static_cast<uint32_t>(chunk_len)
+    );
+
+    g_region->segment_control[seg].status = SEG_FILLED;
+    g_region->segment_control[seg].owner = static_cast<uint16_t>(c);
+
+    if (!g_region->s2cbuffer[c].push(data_msg)) {
+        g_region->segment_control[seg].status = SEG_FREE;
+        g_region->segment_control[seg].owner = 0;
+        return;
+    }
+
+    out.offset_sent += chunk_len;
+    trace_qos("send", c, out.req_id, mask);
+
+    if (is_last) {
+        g_outgoing.erase(it);
+        g_send_queue[c].pop_front();
+    }
+
+    notify_client(c);
 }
 
 int main(int argc, char *argv[]){
@@ -261,21 +399,21 @@ int main(int argc, char *argv[]){
             sms_size = static_cast<uint32_t>(atoi(argv[++i]));
         } 
         else {
-            fprintf(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
-            fprintf(stderr, "Usage: %s --n_sms <N> --sms_size <bytes>\n", argv[0]);
+            gt_debug_logs(stderr, "Unknown or incomplete argument: %s\n", argv[i]);
+            gt_debug_logs(stderr, "Usage: %s --n_sms <N> --sms_size <bytes>\n", argv[0]);
             return 1;
         }
     }
 
     if (n_sms == 0 || sms_size == 0) {
-        fprintf(stderr, "Both --n_sms and --sms_size are required and must be > 0\n");
+        gt_debug_logs(stderr, "Both --n_sms and --sms_size are required and must be > 0\n");
         return 1;
     }
 
     //Region setup
     tf_err retcode = create_and_init_region(n_sms, sms_size, &g_shm_id, &g_region);
     if(retcode!=tf_err::SUCCESS){
-        fprintf(stderr, "create_and_init_region failed: %s\n", tf_err_str(retcode));
+        gt_debug_logs(stderr, "create_and_init_region failed: %s\n", tf_err_str(retcode));
         return 1;
     }
 
@@ -299,7 +437,7 @@ int main(int argc, char *argv[]){
     snappy_env env{};
 
     if (snappy_init_env(&env) != 0) {
-        fprintf(stderr, "Snappy initialization failed\n");
+        gt_debug_logs(stderr, "Snappy initialization failed\n");
         destroy_region(g_region, g_shm_id);
         return 1;
     }
@@ -311,11 +449,11 @@ int main(int argc, char *argv[]){
     while (running) {
         bool did_work = false;
 
-        if (!g_compression_queue.empty()) {
+        if (has_compression_work()) {
             process_compression_queue(env);
             did_work = true;
         }
-        if (!g_send_queue.empty() && has_free_segment()) {
+        if (has_send_work() && has_free_segment()) {
             process_send_queue();
             did_work = true;
         }
