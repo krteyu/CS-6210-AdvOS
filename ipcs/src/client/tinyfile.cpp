@@ -4,6 +4,7 @@
 #include "ringbuffer.h"
 #include "shm_common.h"
 #include "protocols.h"
+#include "debug.h"
 
 #include <unordered_map>
 #include <vector>
@@ -58,9 +59,10 @@ static tf_err push_and_notify(const ringnode_t &msg) {
     if (!g_c2sbuffer->push(msg)) {
         return tf_err::E_RING_FULL;
     }
-    if (semop(g_region->doorbell_semid, &post_op, 1) == -1) {
+    if (!notify_if_needed(g_region->doorbell_semid)) {
         return tf_err::E_SEMOP_FAILED;
     }
+    gt_debug(stderr,"[CLIENT %d]doorbell value: %d\n", g_client_id, semctl(g_region->doorbell_semid, 0, GETVAL));
     return tf_err::SUCCESS;
 }
 
