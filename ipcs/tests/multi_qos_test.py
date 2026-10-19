@@ -15,6 +15,7 @@ import re
 import time
 import os
 import signal
+import csv
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -98,7 +99,7 @@ def parse_arguments() -> argparse.Namespace:
 
 	return args
 
-def prepare_dirs(ipcs: Path, output: Path | None) -> Path:
+def prepare_dirs(ipcs: Path, config) -> Path:
     if not (ipcs / "Makefile").exists():
         raise ValueError(f"Not a TinyFile directory: {ipcs}")
 
@@ -111,8 +112,8 @@ def prepare_dirs(ipcs: Path, output: Path | None) -> Path:
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     root = (
-        output if output is not None
-        else ipcs / "test_runs" / f"multiclient_{stamp}"
+        config.out if config.out is not None
+        else ipcs / "test_runs" / f"multiclient_{stamp}_{config.sms_size}"
     ).resolve()
 
     root.mkdir(parents=True, exist_ok=True)
@@ -306,33 +307,35 @@ def analyse_qos(
 	missing_masks = 0
 	invalid_masks = 0
 
-	for line in log_path.read_text(errors="replace").splitlines():
-		match = TRACE_RE.fullmatch(line.strip())
-		if match is None:
-			continue
-		
-		stage, client_str, weight_str, req_str, mask_str = match.groups()
+	with log_path.open("r", errors="replace") as log:
+		for line in log:
+			match = TRACE_RE.fullmatch(line.strip())
 
-		client_id = int(client_str)
-		weight = int(weight_str)
-		observed_weights.setdefault(client_id, set()).add(weight)
-		mask = int(mask_str) if mask_str is not None else None
+			if match is None:
+				continue
+			
+			stage, client_str, weight_str, req_str, mask_str = match.groups()
 
-		total[stage][client_id] += 1
+			client_id = int(client_str)
+			weight = int(weight_str)
+			observed_weights.setdefault(client_id, set()).add(weight)
+			mask = int(mask_str) if mask_str is not None else None
 
-		if mask is None:
-			missing_masks += 1
-			continue
-		
-		if mask & ~all_mask:
-			invalid_masks += 1
-			continue
-		
-		if mask == all_mask:
-			fully_contended[stage][client_id] += 1
-		
-		elif mask.bit_count() >= 2:
-			partial_contention[stage] += 1
+			total[stage][client_id] += 1
+
+			if mask is None:
+				missing_masks += 1
+				continue
+			
+			if mask & ~all_mask:
+				invalid_masks += 1
+				continue
+			
+			if mask == all_mask:
+				fully_contended[stage][client_id] += 1
+			
+			elif mask.bit_count() >= 2:
+				partial_contention[stage] += 1
 	
 	return{
 		"total": total,
@@ -399,10 +402,27 @@ def print_client_timings(clients: list[ClientSpec]) -> None:
 			f"time={duration:.4f}s"
 		)
 
+def save_cst_csv(clients, segment_size, output_path):
+	with output_path.open("w", newline="") as f:
+		writer = csv.writer(f)
+		writer.writerow(["segment_size", "client", "weight","mode", "file", "cst_seconds"])
+		for client in clients:
+			for line in client.log_path.open():
+				match = CST_RE.fullmatch(line.strip())
+				if match:
+					writer.writerow([
+						segment_size,
+						client.index,
+						client.weight,
+						match.group(2),
+						match.group(1),
+						float(match.group(3))
+					])
+
 def main():
 	config = parse_arguments()
 	ipcs = config.ipcs.resolve()
-	root = prepare_dirs(ipcs, config.out)
+	root = prepare_dirs(ipcs, config)
 	lib = build_decoder(ipcs, root)
 	input_dir = (config.input_dir.resolve() if config.input_dir is not None else ipcs.parent / "bin" / "input")
 	clients = prepare_clients(config, input_dir, root)
@@ -417,6 +437,7 @@ def main():
 		launch_clients(ipcs, clients)
 
 		wait_for_clients(clients, server, config.timeout)
+		save_cst_csv(clients, config.sms_size, root / "cst.csv")
 		print_client_timings(clients)
 		errors = []
 		for client in clients:
