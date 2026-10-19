@@ -402,16 +402,17 @@ def print_client_timings(clients: list[ClientSpec]) -> None:
 			f"time={duration:.4f}s"
 		)
 
-def save_cst_csv(clients, segment_size, output_path):
+def save_cst_csv(clients, segment_size, n_sms, output_path):
 	with output_path.open("w", newline="") as f:
 		writer = csv.writer(f)
-		writer.writerow(["segment_size", "client", "weight","mode", "file", "cst_seconds"])
+		writer.writerow(["segment_size", "n_sms", "client", "weight","mode", "file", "cst_seconds"])
 		for client in clients:
 			for line in client.log_path.open():
 				match = CST_RE.fullmatch(line.strip())
 				if match:
 					writer.writerow([
 						segment_size,
+						n_sms,
 						client.index,
 						client.weight,
 						match.group(2),
@@ -437,7 +438,7 @@ def main():
 		launch_clients(ipcs, clients)
 
 		wait_for_clients(clients, server, config.timeout)
-		save_cst_csv(clients, config.sms_size, root / "cst.csv")
+		save_cst_csv(clients, config.sms_size, config.n_sms, root / "cst.csv")
 		print_client_timings(clients)
 		errors = []
 		for client in clients:
