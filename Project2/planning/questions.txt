@@ -1,0 +1,13 @@
+is the number of segments equal with number of clients?
+
+no, there will be 1, 3, or 5 segments
+
+how many processes/clients are we running?
+
+4 or 8 clients
+
+can we have extra segment for message queue? per-pair queue?
+
+yea
+
+can we make a max client number so the server knows how many mailboxes to create?
